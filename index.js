@@ -5,6 +5,7 @@ const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
 const jwt = require("jsonwebtoken");
+const stripe = require("stripe")(process.env.PAYMENT_SECRET_KEY);
 
 app.use(cors());
 app.use(express.json());
@@ -48,6 +49,7 @@ async function run() {
     const menuCollection = client.db("bistroDB").collection("menu");
     const reviewsCollection = client.db("bistroDB").collection("reviews");
     const cartCollection = client.db("bistroDB").collection("carts");
+    const paymentCollection = client.db("bistroDB").collection("payments");
 
     const verifyAdmin = async (req, res, next) => {
       const email = req.user.email;
@@ -171,6 +173,114 @@ async function run() {
       const result = await cartCollection.deleteOne(query);
       res.send(result);
     });
+
+    // payment store
+    app.post("/payments", authenticateToken, async (req, res) => {
+      const payment = req.body;
+      const insertedResult = await paymentCollection.insertOne(payment);
+      const query = {
+        _id: { $in: payment.cartItems.map((id) => new ObjectId(id)) },
+      };
+      const deleteResult = await cartCollection.deleteMany(query);
+      res.send({ insertedResult, deleteResult });
+    });
+
+    //payment api
+    app.post("/create-payment-intent", authenticateToken, async (req, res) => {
+      const { price } = req.body;
+
+      // Create a PaymentIntent with the order amount and currency
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: price * 100,
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
+    });
+
+    //admin stats
+
+    app.get(
+      "/admin-stats",
+      authenticateToken,
+      verifyAdmin,
+      async (req, res) => {
+        const users = await userCollection.estimatedDocumentCount();
+        const products = await menuCollection.estimatedDocumentCount();
+        const orders = await paymentCollection.estimatedDocumentCount();
+        const payments = await paymentCollection.find().toArray();
+
+        const totalRevenue = payments.reduce(
+          (prev, item) => prev + item.price,
+          0
+        );
+
+        /* const totalRevenue = await paymentCollection
+          .aggregate([
+            {
+              $group: {
+                _id: null,
+                totalAmount: { $sum: "$yourField" },
+              },
+            },
+          ])
+          .toArray(); */
+
+        res.send({ users, products, orders, totalRevenue });
+      }
+    );
+
+    app.get(
+      "/order-stats",
+      authenticateToken,
+      verifyAdmin,
+      async (req, res) => {
+        const result = await paymentCollection
+          .aggregate([
+            {
+              $unwind: "$menuItems",
+            },
+            {
+              $lookup: {
+                from: "menu",
+                let: { menuItemId: { $toObjectId: "$menuItems" } },
+                pipeline: [
+                  {
+                    $match: {
+                      $expr: { $eq: ["$_id", "$$menuItemId"] },
+                    },
+                  },
+                ],
+                as: "menuItemsData",
+              },
+            },
+            {
+              $unwind: "$menuItemsData",
+            },
+            {
+              $group: {
+                _id: "$menuItemsData.category",
+                count: { $sum: 1 },
+                total: { $sum: "$menuItemsData.price" },
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                category: "$_id",
+                count: 1,
+                total: { $round: ["$total", 2] },
+              },
+            },
+          ])
+          .toArray();
+
+        res.send(result);
+      }
+    );
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
