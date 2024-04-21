@@ -299,7 +299,7 @@ app.get("/", (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log("Listening");
+  console.log("Listening", port);
 });
 
 module.exports = app;
