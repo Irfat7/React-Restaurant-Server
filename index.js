@@ -302,6 +302,8 @@ app.listen(port, () => {
   console.log("Listening");
 });
 
+module.exports = app;
+
 /* jwt secret key 
 node 
 require('crypto').randomBytes(64).toString('hex') */
